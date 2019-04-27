@@ -92,40 +92,56 @@ class Casparcg():
     def frames_left(self, channel=1, layer=10):
 
         cmd = "INFO {}-{}\r\n".format(channel, layer).encode("ascii")
-        self.tel.write(cmd)
+        self._write(cmd)
         ret_code = self.tel.read_until(b"\r\n")
         if b"201 INFO OK" not in ret_code:
             raise Exception("Unexpected response code {}".format(ret_code))
         ret = self.tel.read_until(b"\r\n")
         tree = xml.etree.ElementTree.fromstring(ret)
-        frame_tot = int(tree.find("nb_frames").text)
-        frame_left = int(tree.find("frames-left").text)
+        try:
+            playing_file = tree.find(".//file/path").text
+        except AttributeError:
+            # Nothing playing
+            return 0
+        if playing_file[0:4] == "http":
+            # webpage, so never going to end
+            return 10
 
-        if frame_left > frame_tot:
+        times = tree.findall(".//time")
+        try:
+            time_tot = float(times[1].text)
+        except IndexError:
+            # Nothing playing
+            return 0
+        time_left = float(times[1].text) - float(times[0].text)
+
+        if time_left > time_tot:
             # Probably finished
             return 0
+        elif time_left < 0.04:
+            return 0
         else:
-            return int(tree.find("frames-left").text)
+            return time_left
 
     def runTemplate(self, template, channel = 1, layer = 20, flayer = 1, f0 = None):
 
         cmd = "CG {}-{} ADD {} \"{}\" 1 \"<templateData><componentData id=\\\"f0\\\"><data id=\\\"text\\\" value=\\\"{}\\\"/></componentData></templateData>\"\r\n".format(channel, layer, flayer, template, f0)
-        self.tel.write(cmd)
+        self._write(cmd)
 
     def stop(self, channel, layer, flayer):
 
-        self.tel.write('CG {}-{} STOP {}\r\n'.format(channel, layer, flayer))
+        self._write('CG {}-{} STOP {}\r\n'.format(channel, layer, flayer))
 
     def clear(self, channel=1, layer=10):
 
-        self.tel.write('CG {}-{} CLEAR\r\n'.format(channel, layer).encode("ascii"))
+        self._write('CG {}-{} CLEAR\r\n'.format(channel, layer).encode("ascii"))
         ret_code = self.tel.read_until(b"\r\n")
         if b"202 CG OK" not in ret_code:
             raise Exception("Unexpected response code {}".format(ret_code))
     
     def play_file(self, filename, channel=1, layer=10):
         cmd = "PLAY {}-{} \"{}\" CUT 1 Linear RIGHT\r\n".format(channel, layer, filename).encode("ascii")
-        self.tel.write(cmd)
+        self._write(cmd)
         ret_code = self.tel.read_until(b"\r\n")
         if b"202 PLAY OK" not in ret_code:
             raise Exception("Unexpected response code {}".format(ret_code))
@@ -137,22 +153,33 @@ class Casparcg():
         return cmd
 
     def _play(self, cmd):
-        self.tel.write(cmd.encode("ascii"))
+        self._write(cmd.encode("ascii"))
         ret_code = self.tel.read_until(b"\r\n")
         if b"202 PLAY OK" not in ret_code:
             raise Exception("Unexpected response code {}".format(ret_code))
+    
+    def _write(self, cmd):
+        try:
+            self.tel.write(cmd)
+        except ConnectionAbortedError:
+            self.tel = telnetlib.Telnet(host = host, port = port)
+            self.tel.write(cmd)
 
     def __init__(self, host = None, port = None):
         self.host = host
         self.port = port
         self.tel = telnetlib.Telnet(host = host, port = port)
         self.name = 'casparcg'
-        #self.open()
 
-def run_control(cghost, cgport, cgweb, dbcur):
+def run_control(cghost, cgport, cgweb, dbcur=None):
+
+    logging.basicConfig(level=logging.DEBUG)
 
     cg = Casparcg(cghost, cgport)
-    db = Database(cur=dbcur)
+    if dbcur:
+        db = Database(cur=dbcur)
+    else:
+        db = Database()
 
     action = db.next_action()
     web_count = 0
@@ -171,7 +198,7 @@ def run_control(cghost, cgport, cgweb, dbcur):
                     db.update_runlog(cmd, action)
                     db.update_video(next_vid)
                 elif action == "web":
-                    cmd = cg.play_web("https://google.com")
+                    cmd = cg.play_web(cgweb)
                     logger.info("Playing Schedule.")
                     db.update_runlog(cmd, action)
                 elif action == "ident":
@@ -181,10 +208,10 @@ def run_control(cghost, cgport, cgweb, dbcur):
                     db.update_runlog(cmd, action)
                     db.update_ident(next_ident)
                 time.sleep(1)
-            elif frames < 10:
+            elif frames < 1:
                 time.sleep(1/25)
-            elif frames < 75:
-                time.sleep((frames-10)/25)
+            elif frames < 3:
+                time.sleep(frames - 0.5)
             else:
                 if db.current_action() == "web":
                     if web_count > 10:
@@ -193,20 +220,19 @@ def run_control(cghost, cgport, cgweb, dbcur):
                         continue
                     else:
                         web_count += 1
-                logger.debug("Still playing, waiting for {} seconds...".format(LOOP_WAIT))
+                logger.debug("{:.2f} seconds left, waiting for {} seconds...".format(frames, LOOP_WAIT))
+                time.sleep(LOOP_WAIT)
         except KeyboardInterrupt:
             break
         except:
-            logger.Exception("Unexpected error.")
-        finally:
+            logger.exception("Unexpected error.")
             time.sleep(LOOP_WAIT)
-
 
 if __name__ == "__main__":
     pass
     
-#    host = 'localhost'
-#    port = '5250'
+    host = 'localhost'
+    port = '5250'
 
-#    cg = Casparcg(host, port)
-#    db = Database()
+    cg = Casparcg(host, port)
+    run_control(host, port, "http://notmattandtom.co.uk:3001/")
