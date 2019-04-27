@@ -1,0 +1,17 @@
+{
+    "webpage": "https://google.com",
+    "db": {
+        "host": "localhost",
+        "dbname": "huntsman",
+        "user": "postgres",
+        "pass": ""
+    },
+    "casparcg": {
+        "host": "localhost",
+        "port": 5250,
+        "media_root": "C:\\media",
+        "videos":"videos",
+        "idents":"ident",
+        "binary": "C:\\casparcg.exe"
+    }
+}
