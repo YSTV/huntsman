@@ -8,6 +8,7 @@ import psycopg2
 logger = logging.getLogger(__name__)
 
 LOOP_WAIT = 2
+WEB_WAIT = 30
 
 def check_web():
     return True
@@ -91,7 +92,7 @@ class Casparcg():
 
     def frames_left(self, channel=1, layer=10):
 
-        cmd = "INFO {}-{}\r\n".format(channel, layer).encode("ascii")
+        cmd = "INFO {}\r\n".format(channel).encode("ascii")
         self._write(cmd)
         ret_code = self.tel.read_until(b"\r\n")
         if b"201 INFO OK" not in ret_code:
@@ -99,7 +100,7 @@ class Casparcg():
         ret = self.tel.read_until(b"\r\n")
         tree = xml.etree.ElementTree.fromstring(ret)
         try:
-            playing_file = tree.find(".//file/path").text
+            playing_file = tree.find(".//layer_{}/foreground/file/path".format(layer)).text
         except AttributeError:
             # Nothing playing
             return 0
@@ -118,7 +119,7 @@ class Casparcg():
         if time_left > time_tot:
             # Probably finished
             return 0
-        elif time_left < 0.04:
+        elif time_left < 0.05:
             return 0
         else:
             return time_left
@@ -132,15 +133,24 @@ class Casparcg():
 
         self._write('CG {}-{} STOP {}\r\n'.format(channel, layer, flayer))
 
-    def clear(self, channel=1, layer=10):
+    def clear(self, channel=1, layer=None):
 
-        self._write('CG {}-{} CLEAR\r\n'.format(channel, layer).encode("ascii"))
+        if layer:
+            layer="-" + str(layer)
+        else:
+            layer=""
+
+        self._write('CLEAR {}{} CLEAR\r\n'.format(channel, layer).encode("ascii"))
         ret_code = self.tel.read_until(b"\r\n")
-        if b"202 CG OK" not in ret_code:
+        if b"202 CLEAR OK" not in ret_code:
             raise Exception("Unexpected response code {}".format(ret_code))
     
-    def play_file(self, filename, channel=1, layer=10):
-        cmd = "PLAY {}-{} \"{}\" CUT 1 Linear RIGHT\r\n".format(channel, layer, filename).encode("ascii")
+    def play_file(self, filename, channel=1, layer=10, loop=False):
+        if loop:
+            loop = "loop"
+        else:
+            loop = ""
+        cmd = "PLAY {}-{} \"{}\" CUT 1 Linear RIGHT {}\r\n".format(channel, layer, filename, loop).encode("ascii")
         self._write(cmd)
         ret_code = self.tel.read_until(b"\r\n")
         if b"202 PLAY OK" not in ret_code:
@@ -151,6 +161,13 @@ class Casparcg():
         cmd = "PLAY {}-{} [HTML] \"{}\" CUT 1 Linear RIGHT\r\n".format(channel, layer, url)
         self._play(cmd)
         return cmd
+
+    def play_schedule(self, url, bgvid, bgaudio, channel=1, layer=10):
+
+        cmd1 = self.play_web(url, channel, layer)
+        cmd2 = self.play_file(bgaudio, channel, layer-1, loop=True)
+        cmd3 = self.play_file(bgvid, channel, layer-2, loop=True)
+        return cmd1 + cmd2 + cmd3
 
     def _play(self, cmd):
         self._write(cmd.encode("ascii"))
@@ -173,8 +190,6 @@ class Casparcg():
 
 def run_control(cghost, cgport, cgweb, dbcur=None):
 
-    logging.basicConfig(level=logging.DEBUG)
-
     cg = Casparcg(cghost, cgport)
     if dbcur:
         db = Database(cur=dbcur)
@@ -189,7 +204,6 @@ def run_control(cghost, cgport, cgweb, dbcur=None):
         try:
             frames = cg.frames_left()
             if frames == 0:
-                #cg.play_file("ROSES24/18_UNIBRASSSHIELDBRISTOL_SPR06")
                 action = db.next_action()
                 if action == "video":
                     next_vid = db.get_next_video()
@@ -198,7 +212,7 @@ def run_control(cghost, cgport, cgweb, dbcur=None):
                     db.update_runlog(cmd, action)
                     db.update_video(next_vid)
                 elif action == "web":
-                    cmd = cg.play_web(cgweb)
+                    cmd = cg.play_schedule(cgweb, "SCHEDULE/ROSES-BG-BLANK", "SCHEDULE/BG-MUSIC")
                     logger.info("Playing Schedule.")
                     db.update_runlog(cmd, action)
                 elif action == "ident":
@@ -207,19 +221,22 @@ def run_control(cghost, cgport, cgweb, dbcur=None):
                     cmd = cg.play_file(next_ident)
                     db.update_runlog(cmd, action)
                     db.update_ident(next_ident)
-                time.sleep(1)
+                time.sleep(LOOP_WAIT)
             elif frames < 1:
+                logger.debug("{:.2f} seconds left, waiting for {} seconds...".format(frames, LOOP_WAIT))
                 time.sleep(1/25)
             elif frames < 3:
+                logger.debug("{:.2f} seconds left, waiting for {} seconds...".format(frames, LOOP_WAIT))
                 time.sleep(frames - 0.5)
             else:
                 if db.current_action() == "web":
-                    if web_count > 10:
+                    if web_count > WEB_WAIT:
                         web_count = 0
                         cg.clear()
                         continue
                     else:
                         web_count += 1
+                    frames = ((WEB_WAIT + 2) - web_count) * LOOP_WAIT
                 logger.debug("{:.2f} seconds left, waiting for {} seconds...".format(frames, LOOP_WAIT))
                 time.sleep(LOOP_WAIT)
         except KeyboardInterrupt:
@@ -229,8 +246,13 @@ def run_control(cghost, cgport, cgweb, dbcur=None):
             time.sleep(LOOP_WAIT)
 
 if __name__ == "__main__":
-    pass
     
+    logging.basicConfig(
+        level=logging.DEBUG, 
+        format='%(asctime)s %(name)-12s %(levelname)-8s %(message)s',
+        datefmt='%m-%d %H:%M'
+    )
+
     host = 'localhost'
     port = '5250'
 

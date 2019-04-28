@@ -9,7 +9,7 @@ CREATE TABLE IF NOT EXISTS public.idents (
 );
 
 CREATE TABLE IF NOT EXISTS public.runlog (
-    run_cmd character varying(128) NOT NULL,
+    run_cmd character varying(256) NOT NULL,
     run_id serial PRIMARY KEY,
     run_type character varying(8) NOT NULL,
     run_time timestamp with time zone NOT NULL
