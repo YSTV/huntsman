@@ -6,12 +6,17 @@ import time
 
 logger = logging.getLogger(__name__)
 
+# How long to wait between scans
 LOOP_WAIT = 30
 
+# Select statement to get existing idents
 ident_select = "select ident_id,ident_file,ident_cgname,ident_duration from idents where ident_file = '{}'"
+# Insert statement for adding an ident to the DB
 ident_insert = "insert into idents (ident_file, ident_cgname)  values ('{}', '{}')"
 
+# Select statement to get existing videos
 video_select = "select video_id,video_file,video_cgname,video_duration from videos where video_file = '{}'"
+# Insert statement for adding an ident to the DB
 video_insert = "insert into videos (video_file, video_cgname)  values ('{}', '{}')"
 
 def video_update(path, folder, db):
@@ -65,6 +70,7 @@ def ident_update(path, folder, db):
             db.execute(cmd)
 
 def watch_folders(media_path, video_folder, ident_folder, dbcur):
+    """Loop to actually run the watchfolders."""
 
     while True:
         try:

@@ -7,13 +7,20 @@ import psycopg2
 
 logger = logging.getLogger(__name__)
 
+# Time to wait (seconds) between checking if we need to start something new
 LOOP_WAIT = 2
+
+# Max value of the web counter - total time will be LOOP_WAIT * WEB_WAIT
 WEB_WAIT = 30
 
 def check_web():
+    """Will eventually poll another webpage to check if the schedule
+    has finished runnin."""
+
     return True
 
 class Database():
+    """Bit of a wrapper around a psycopg2 cursor, to sanitise filenames etc."""
 
     def fetchall(self):
         return self.cur.fetchall()
@@ -22,15 +29,25 @@ class Database():
         return self.cur.execute(sql)
 
     def update_ident(self, filename):
+        """Update last played time for an ident"""
+
         filename = filename.replace("'", "''")
         self.cur.execute("update idents set ident_lastplay=NOW() where ident_cgname = '{}'".format(filename))
 
-
     def update_video(self, filename):
+        """Update last played time for a video"""
+
         filename = filename.replace("'", "''")
         self.cur.execute("update videos set video_lastplay=NOW() where video_cgname = '{}'".format(filename))
 
     def update_runlog(self, cmd, action):
+        """Add the last run command to the runlog.
+        
+        Args:
+            cmd: The command that has most recently been ran.
+            action: video/ident/web.
+        """
+
         cmd = cmd.replace("'", "''")
         self.cur.execute("insert into runlog (run_cmd, run_time, run_type) values ('{}', NOW(), '{}')".format(cmd, action))
 
@@ -43,6 +60,8 @@ class Database():
             self.cur = self.conn.cursor()
 
     def get_next_video(self):
+        """Work out which video should be played next."""
+
         self.execute("select video_cgname from videos where video_lastplay is null limit 1")
         video = self.fetchall()
         if video:
@@ -52,6 +71,8 @@ class Database():
         return self.fetchall()[0][0]
 
     def get_next_ident(self):
+        """Work out which ident should be played next."""
+
         self.execute("select ident_cgname from idents where ident_lastplay is null limit 1")
         video = self.fetchall()
         if video:
@@ -61,6 +82,8 @@ class Database():
         return self.fetchall()[0][0]
 
     def next_action(self):
+        """Decide what action (video/ident/web) should be done next."""
+
         self.execute("select run_type from runlog order by run_time desc limit 2")
 
         rows = self.fetchall()
@@ -79,6 +102,8 @@ class Database():
             return "ident"
 
     def current_action(self):
+        """Check runlog for what should be currently playing."""
+
         self.execute("select run_type from runlog order by run_time desc limit 1")
 
         rows = self.fetchall()
@@ -91,13 +116,18 @@ class Database():
 class Casparcg():
 
     def frames_left(self, channel=1, layer=10):
+        """Work out how long is left in the currently playing ident/video.
+
+        Returns:
+            float time_left (in seconds).
+        """
 
         cmd = "INFO {}\r\n".format(channel).encode("ascii")
         self._write(cmd)
-        ret_code = self.tel.read_until(b"\r\n")
+        ret_code = self._read()
         if b"201 INFO OK" not in ret_code:
             raise Exception("Unexpected response code {}".format(ret_code))
-        ret = self.tel.read_until(b"\r\n")
+        ret = self._read()
         tree = xml.etree.ElementTree.fromstring(ret)
         try:
             playing_file = tree.find(".//layer_{}/foreground/file/path".format(layer)).text
@@ -124,16 +154,13 @@ class Casparcg():
         else:
             return time_left
 
-    def runTemplate(self, template, channel = 1, layer = 20, flayer = 1, f0 = None):
-
-        cmd = "CG {}-{} ADD {} \"{}\" 1 \"<templateData><componentData id=\\\"f0\\\"><data id=\\\"text\\\" value=\\\"{}\\\"/></componentData></templateData>\"\r\n".format(channel, layer, flayer, template, f0)
-        self._write(cmd)
-
-    def stop(self, channel, layer, flayer):
-
-        self._write('CG {}-{} STOP {}\r\n'.format(channel, layer, flayer))
-
     def clear(self, channel=1, layer=None):
+        """Clear the selected channel/layer.
+
+        Args:
+            channel: channel to clear
+            layer: layer to clear. Clears entire channel if not specified.
+        """
 
         if layer:
             layer="-" + str(layer)
@@ -141,28 +168,44 @@ class Casparcg():
             layer=""
 
         self._write('CLEAR {}{} CLEAR\r\n'.format(channel, layer).encode("ascii"))
-        ret_code = self.tel.read_until(b"\r\n")
+        ret_code = self._read()
         if b"202 CLEAR OK" not in ret_code:
             raise Exception("Unexpected response code {}".format(ret_code))
     
     def play_file(self, filename, channel=1, layer=10, loop=False):
+        """Play a file.
+
+        Args:
+            filename: the file to play, as CasparCG will see it.
+                (All caps, no extension)
+            channel: channel to play on.
+            layer: layer to play on.
+            loop: True to loop the file, False to play once.
+        
+        Returns:
+            cmd send to CasparCG.
+        """
+
         if loop:
             loop = "loop"
         else:
             loop = ""
         cmd = "PLAY {}-{} \"{}\" CUT 1 Linear RIGHT {}\r\n".format(channel, layer, filename, loop).encode("ascii")
         self._write(cmd)
-        ret_code = self.tel.read_until(b"\r\n")
+        ret_code = self._read()
         if b"202 PLAY OK" not in ret_code:
             raise Exception("Unexpected response code {}".format(ret_code))
         return cmd.decode("ascii")
     
     def play_web(self, url, channel=1, layer=10):
+        """Start a webpage playing in CasparCG."""
+
         cmd = "PLAY {}-{} [HTML] \"{}\" CUT 1 Linear RIGHT\r\n".format(channel, layer, url)
         self._play(cmd)
         return cmd
 
     def play_schedule(self, url, bgvid, bgaudio, channel=1, layer=10):
+        """Kick off schedule webpage, background and music."""
 
         cmd1 = self.play_web(url, channel, layer)
         cmd2 = self.play_file(bgaudio, channel, layer-1, loop=True)
@@ -171,24 +214,51 @@ class Casparcg():
 
     def _play(self, cmd):
         self._write(cmd.encode("ascii"))
-        ret_code = self.tel.read_until(b"\r\n")
+        ret_code = self._read()
         if b"202 PLAY OK" not in ret_code:
             raise Exception("Unexpected response code {}".format(ret_code))
     
+    def _read(self):
+        ret_code = None
+        while not ret_code:
+            try:
+                ret_code = self.tel.read_until(b"\r\n", 2)
+                break
+            except (ConnectionAbortedError, EOFError):
+                try:
+                    self.tel = telnetlib.Telnet(host = host, port = port)
+                except ConnectionRefusedError:
+                    logger.warning("Lost connection to CasparCG, retrying in 2 seconds.")
+                    time.sleep(2)
+        return ret_code
+    
     def _write(self, cmd):
-        try:
-            self.tel.write(cmd)
-        except ConnectionAbortedError:
-            self.tel = telnetlib.Telnet(host = host, port = port)
-            self.tel.write(cmd)
+        while True:
+            try:
+                self.tel.write(cmd)
+                break
+            except ConnectionAbortedError:
+                try:
+                    self.tel = telnetlib.Telnet(host = host, port = port)
+                except ConnectionRefusedError:
+                    logger.warning("Lost connection to CasparCG, retrying in 2 seconds.")
+                    time.sleep(2)
 
     def __init__(self, host = None, port = None):
         self.host = host
         self.port = port
-        self.tel = telnetlib.Telnet(host = host, port = port)
+        self.tel = None
+
+        while not self.tel:
+            try:
+                self.tel = telnetlib.Telnet(host = host, port = port)
+            except ConnectionRefusedError:
+                logger.warning("Unable to connect to {}:{}, retrying in 10 seconds.".format(host, port))
+                time.sleep(10)
         self.name = 'casparcg'
 
 def run_control(cghost, cgport, cgweb, dbcur=None):
+    """Main loop that actually does the CasparCG control."""
 
     cg = Casparcg(cghost, cgport)
     if dbcur:
@@ -197,7 +267,7 @@ def run_control(cghost, cgport, cgweb, dbcur=None):
         db = Database()
 
     action = db.next_action()
-    web_count = 0
+    web_count = WEB_WAIT
 
     logger.info("Starting Huntsman player control")
     while True:
@@ -230,13 +300,13 @@ def run_control(cghost, cgport, cgweb, dbcur=None):
                 time.sleep(frames - 0.5)
             else:
                 if db.current_action() == "web":
-                    if web_count > WEB_WAIT:
-                        web_count = 0
+                    if web_count <= 0:
+                        web_count = WEB_WAIT
                         cg.clear()
                         continue
                     else:
-                        web_count += 1
-                    frames = ((WEB_WAIT + 2) - web_count) * LOOP_WAIT
+                        web_count -= 1
+                    frames = web_count * LOOP_WAIT
                 logger.debug("{:.2f} seconds left, waiting for {} seconds...".format(frames, LOOP_WAIT))
                 time.sleep(LOOP_WAIT)
         except KeyboardInterrupt:
